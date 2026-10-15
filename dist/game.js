@@ -134,6 +134,7 @@ function beep(freq = 500) {
   if (!sound) return;
   try {
     audio ??= new AudioContext();
+    if(audio.state==='suspended') void audio.resume();
     const oscillator = audio.createOscillator(), gain = audio.createGain();
     oscillator.type = 'sine'; oscillator.connect(gain); gain.connect(audio.destination);
     oscillator.frequency.setValueAtTime(freq, audio.currentTime);
@@ -149,7 +150,7 @@ function toast(text) {
 }
 function slotX(i) { return (i - (slotMax - 1) / 2) * 1.738; }
 function queueColumns(){return Math.min(4,lanes.length);}
-function queueX(i) { return slotX(i + Math.floor((slotMax - queueColumns()) / 2)); }
+function queueX(i) { return slotX(i + (slotMax - queueColumns()) / 2); }
 function start() {
   levelGeneration++;
   boxes.forEach(b => { b.mesh.metadata.badge.texture.dispose(); b.mesh.metadata.badge.material.dispose(); });
@@ -304,11 +305,23 @@ function updateBoxBadge(box) {
   const { ctx, texture } = box.mesh.metadata.badge;
   ctx.clearRect(0, 0, 256, 128); ctx.fillText(`${box.count} / ${boxCapacity}`, 128, 70); texture.update();
 }
-function burst(position) {
-  for (let i = 0; i < 20; i++) {
-    const object = cube(.09, .05, .08, colors[i % 5], position.x, position.y + .6, position.z);
-    particles.push({ mesh: object, v: new B.Vector3((Math.random() - .5) * 3, 2 + Math.random() * 2, (Math.random() - .5) * 2), life: 1.2 });
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function pulse(element, amount=1.12) {
+  if(reducedMotion) return;
+  element.animate([{scale:'1'},{scale:String(amount),offset:.35},{scale:'1'}],{duration:220,easing:'ease-out'});
+}
+function burst(position, color=0, count=14) {
+  if(reducedMotion) return;
+  for(let i=0;i<count;i++) {
+    const angle=i/count*Math.PI*2, speed=.7+Math.random()*.9;
+    const object=cube(.055,.035,.055,i%3===0?0xffffff:colors[color],position.x,position.y+.65,position.z,world,.01);
+    shadows.removeShadowCaster(object);
+    particles.push({mesh:object,v:new B.Vector3(Math.cos(angle)*speed,1.3+Math.random(),Math.sin(angle)*speed),life:.48});
   }
+}
+function chime() {
+  if(!sound) return;
+  [784,988,1175].forEach((note,i)=>setTimeout(()=>beep(note),i*55));
 }
 function modal(title, text, icon, actions) {
   paused = true; $('#modal-title').textContent = title; $('#modal-text').textContent = text;
@@ -375,7 +388,7 @@ function frame(time) {
         B.Vector3.LerpToRef(box.move.from,box.target,e,box.mesh.position);
         box.mesh.position.y += 4*t*(1-t)*1.05;
         box.mesh.rotation.x = Math.sin(t * Math.PI) * -.18;
-        if (t === 1) { box.move = null; box.mesh.rotation.x = 0; box.bounce = .5; }
+        if (t === 1) { box.move = null; box.mesh.rotation.x = 0; box.bounce = .85; beep(310); }
       } else if (box.target) {
         B.Vector3.LerpToRef(box.mesh.position,box.target,Math.min(1,dt*16),box.mesh.position);
         if (box.status === 'queue') box.mesh.position.y = box.target.y;
@@ -384,7 +397,7 @@ function frame(time) {
         box.openAmount=Math.min(1,(box.openAmount||0)+dt/.32);poseQueuedFlaps(box);
       }
       box.bounce = Math.max(0, box.bounce - dt * 4);
-      const squash = Math.sin(box.bounce * Math.PI * 2) * box.bounce * .065;
+      const squash = Math.sin(box.bounce * Math.PI * 2) * box.bounce * .12;
       box.mesh.scaling.set(1 + squash, 1 - squash, 1 + squash);
       box.mesh.rotation.z = 0;
       if (box.status === 'closing') {
@@ -400,20 +413,20 @@ function frame(time) {
         }
         if (box.closeTime > .57) {
           box.status = 'vanishing'; box.vanishTime = 0;
-          beep(950);
+          burst(box.mesh.position,box.color); chime();
         }
       }
       if (box.status === 'vanishing') {
         box.vanishTime += dt;
         // A sealed carton gives a quick celebratory pop, then disappears in its slot.
         // Its position stays fixed throughout the completion animation.
-        const pop = Math.sin(Math.min(1, box.vanishTime / .10) * Math.PI) * .045;
+        const pop = Math.sin(Math.min(1, box.vanishTime / .10) * Math.PI) * .12;
         const t = B.Scalar.Clamp((box.vanishTime - .10) / .12, 0, 1);
         const scale = (1 + pop) * (1 - t * t);
         box.mesh.scaling.setAll(Math.max(.001, scale));
         if (t === 1) {
           box.mesh.setEnabled(false); box.status = 'done';
-          waiting = waiting.filter(b => b !== box); coins += 5; update();
+          waiting = waiting.filter(b => b !== box); coins += 5; update(); pulse($('#coins'),1.2);
         }
       }
     }
@@ -427,13 +440,14 @@ function frame(time) {
       flight.mesh.position.y += Math.sin(t * Math.PI) * (1.05 + flight.index * .045);
       flight.mesh.rotation.z = Math.sin(t * Math.PI) * .13;
       flight.mesh.rotation.x = Math.sin(t * Math.PI) * -.22;
-      flight.mesh.scaling.setAll(1 - t * .38);
+      const flightScale=1-t*.32, stretch=Math.sin(t*Math.PI)*.13;
+      flight.mesh.scaling.set(flightScale*(1-stretch*.5),flightScale*(1+stretch),flightScale*(1-stretch*.5));
       if (t >= 1) {
         flights.splice(i, 1); const box = flight.box;
         flight.mesh.rotation.set(0,0,0); flight.mesh.parent=box.mesh;
-        flight.mesh.position.copyFrom(local);flight.mesh.scaling.setAll(.62);
+        flight.mesh.position.copyFrom(local);flight.mesh.scaling.setAll(.68);
         flight.mesh.metadata.landedAt=performance.now();
-        box.count++; box.bounce = .6; packed++; updateBoxBadge(box); beep(500 + box.count * 65);
+        box.count++; box.bounce = .85; burst(box.mesh.position,box.color,4); pulse($('.progress'),1.035); packed++; updateBoxBadge(box); beep(500 + box.count * 65);
         if (box.count === boxCapacity) {
           box.status = 'closing'; box.closeTime = 0; box.target = null; box.move = null;
         }
@@ -443,15 +457,16 @@ function frame(time) {
     }
     for (const box of boxes) for(const piece of box.mesh.getChildren()) {
       if(!piece.metadata?.landedAt) continue;
-      const t=Math.min(1,(time-piece.metadata.landedAt)/140);
-      const bounce=Math.sin(t*Math.PI)*.06*(1-t);
-      piece.position.y=.13+bounce;piece.scaling.set(.62+bounce*.35,.62-bounce*.5,.62+bounce*.35);
+      const t=Math.min(1,(time-piece.metadata.landedAt)/180);
+      const bounce=Math.sin(t*Math.PI)*.10*(1-t);
+      piece.position.y=.13+bounce;piece.scaling.set(.68+bounce*.35,.68-bounce*.5,.68+bounce*.35);
       if(t===1) delete piece.metadata.landedAt;
     }
     for (let i = particles.length - 1; i >= 0; i--) {
       const particle = particles[i]; particle.life -= dt; particle.v.y -= dt * 5;
       particle.mesh.position.addInPlace(particle.v.scale(dt)); particle.mesh.rotation.x += dt * 5;
       particle.mesh.rotation.z += dt * 3;
+      particle.mesh.scaling.setAll(Math.max(.001,Math.min(1,particle.life/.16)));
       if (particle.life <= 0) { particle.mesh.dispose(false,false); particles.splice(i, 1); }
     }
     if (packed === total && !ended && !boxes.some(b => b.status === 'closing' || b.status === 'vanishing')) {
